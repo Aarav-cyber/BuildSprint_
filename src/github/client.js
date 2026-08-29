@@ -74,6 +74,42 @@ export async function getPRDetails(owner, repo, pullNumber) {
 }
 
 /**
+ * Checks actual submitted review activity for a PR.
+ */
+export async function fetchPRReviewStatus(owner, repo, pullNumber) {
+  const octokit = getOctokit();
+
+  try {
+    const { data: reviews } = await octokit.pulls.listReviews({
+      owner,
+      repo,
+      pull_number: pullNumber,
+    });
+
+    const activeReviews = reviews.filter((r) => r.state === 'APPROVED' || r.state === 'CHANGES_REQUESTED' || r.state === 'COMMENTED');
+
+    if (activeReviews.length > 0) {
+      const latestReview = activeReviews[activeReviews.length - 1];
+      return {
+        hasBeenReviewed: true,
+        lastReviewAt: latestReview.submitted_at || latestReview.created_at,
+        latestState: latestReview.state,
+        reviewerCount: activeReviews.length,
+      };
+    }
+  } catch (err) {
+    console.warn(`[GitHub API] Could not fetch reviews for ${owner}/${repo}#${pullNumber}:`, err.message);
+  }
+
+  return {
+    hasBeenReviewed: false,
+    lastReviewAt: null,
+    latestState: null,
+    reviewerCount: 0,
+  };
+}
+
+/**
  * Fetches CODEOWNERS content from repository root or .github/ folder.
  */
 export async function fetchCodeowners(owner, repo) {

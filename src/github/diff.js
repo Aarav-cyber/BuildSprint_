@@ -1,30 +1,50 @@
 /**
  * Preprocesses PR diffs and metadata before passing to LLM.
- * Handles truncation for large diffs to keep within token limits.
+ * Safely handles missing raw diffs, large diffs, empty diffs, deleted/renamed/binary files.
  */
 export function processDiffAndMetadata(prData, maxDiffLength = 8000) {
-  const { title, body, files, rawDiff, additions, deletions, changedFilesCount } = prData;
+  const { title, body, files = [], rawDiff = '', additions = 0, deletions = 0, changedFilesCount = 0 } = prData;
 
-  const summaryHeader = `Title: ${title}\nDescription: ${body || '(No description provided)'}\nStats: +${additions} -${deletions} across ${changedFilesCount} file(s)\n`;
+  const summaryHeader = `Title: ${title || 'Untitled PR'}\nDescription: ${body || '(No description provided)'}\nStats: +${additions} -${deletions} across ${changedFilesCount || files.length} file(s)\n`;
 
   const fileListStr = files
-    .map((f) => `- ${f.filename} (${f.status}, +${f.additions} -${f.deletions})`)
+    .map((f) => `- ${f.filename} (${f.status || 'modified'}, +${f.additions || 0} -${f.deletions || 0})`)
     .join('\n');
 
-  let processedDiff = rawDiff;
+  let processedDiff = rawDiff || '';
 
-  if (!processedDiff && files.length > 0) {
-    // Reconstruct lightweight diff from patches
+  // If rawDiff is missing or empty, reconstruct diff representation from file patches
+  if (!processedDiff.trim() && files.length > 0) {
     processedDiff = files
-      .map((f) => `--- a/${f.filename}\n+++ b/${f.filename}\n${f.patch || '(No patch available)'}`)
+      .map((f) => {
+        if (f.patch) {
+          return `--- a/${f.filename}\n+++ b/${f.filename}\n${f.patch}`;
+        }
+        if (f.status === 'removed') {
+          return `--- a/${f.filename}\n+++ /dev/null\n(File deleted)`;
+        }
+        if (f.status === 'added') {
+          return `--- /dev/null\n+++ b/${f.filename}\n(New file added)`;
+        }
+        if (f.status === 'renamed') {
+          return `--- a/${f.previous_filename || f.filename}\n+++ b/${f.filename}\n(File renamed)`;
+        }
+        return `--- a/${f.filename}\n+++ b/${f.filename}\n(Binary file or patch not available)`;
+      })
       .join('\n\n');
   }
 
-  const isTruncated = processedDiff.length > maxDiffLength;
+  if (!processedDiff.trim()) {
+    processedDiff = '(No code changes or diff available)';
+  }
+
+  const originalLength = processedDiff.length;
+  const isTruncated = originalLength > maxDiffLength;
+
   if (isTruncated) {
     processedDiff =
       processedDiff.substring(0, maxDiffLength) +
-      `\n\n... [Diff truncated: total length was ${rawDiff.length} chars. Prioritizing top modified files.]`;
+      `\n\n... [Diff truncated: total size ${originalLength} characters. Prioritizing initial changes.]`;
   }
 
   return {
@@ -32,5 +52,6 @@ export function processDiffAndMetadata(prData, maxDiffLength = 8000) {
     fileListStr,
     processedDiff,
     isTruncated,
+    originalLength,
   };
 }

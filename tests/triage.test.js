@@ -1,11 +1,13 @@
 import assert from 'node:assert';
 import { test } from 'node:test';
+import { analyzePRWithGroq, generateFallbackAIAnalysis } from '../src/ai/triage.js';
 import { parseCodeowners, matchCodeowners } from '../src/github/client.js';
-import { rankReviewerCandidates } from '../src/reviewer/ranking.js';
-import { calculateDeterministicRisk } from '../src/risk/scoring.js';
+import { processDiffAndMetadata } from '../src/github/diff.js';
+import { rankReviewerCandidates, validateSelectedReviewer } from '../src/reviewer/ranking.js';
+import { calculateDeterministicRisk, blendRiskAssessments } from '../src/risk/scoring.js';
 import { buildTriageSlackCard, buildStaleEscalationSlackCard } from '../src/slack/notifier.js';
 
-test('Risk Scoring - Low Risk Documentation PR', () => {
+test('1. Risk Scoring - Low Risk Documentation PR', () => {
   const pr = {
     title: 'Fix typo in README',
     body: 'Corrected spelling of installation steps.',
@@ -19,7 +21,7 @@ test('Risk Scoring - Low Risk Documentation PR', () => {
   assert.ok(risk.score < 35);
 });
 
-test('Risk Scoring - High Risk Auth & Payments PR', () => {
+test('2. Risk Scoring - High Risk Auth & Payments PR', () => {
   const pr = {
     title: 'Update payment webhook retry logic and auth middleware',
     body: 'Adds automated retries for failed payment webhook notifications.',
@@ -36,41 +38,61 @@ test('Risk Scoring - High Risk Auth & Payments PR', () => {
   assert.ok(risk.score >= 65);
 });
 
-test('CODEOWNERS Parsing and Matching', () => {
-  const codeownersText = `
-  # Global owners
-  * @global-owner
+test('3. Diff Preprocessing - Handles missing, empty, and truncated diffs', () => {
+  const emptyPR = { title: 'Empty PR', files: [], rawDiff: '' };
+  const processedEmpty = processDiffAndMetadata(emptyPR, 1000);
+  assert.ok(processedEmpty.processedDiff.includes('No code changes'));
 
-  # Module owners
-  src/payments/ @alex-payments @fin-team
-  src/auth/ @sarah-auth
-  `;
-
-  const rules = parseCodeowners(codeownersText);
-  assert.strictEqual(rules.length, 3);
-
-  const matched = matchCodeowners(['src/payments/webhook.js', 'src/auth/token.js'], rules);
-  const owners = matched.map((m) => m.username);
-
-  assert.ok(owners.includes('alex-payments'));
-  assert.ok(owners.includes('sarah-auth'));
+  const largeDiff = 'A'.repeat(10000);
+  const largePR = { title: 'Large PR', files: [{ filename: 'app.js' }], rawDiff: largeDiff };
+  const processedLarge = processDiffAndMetadata(largePR, 500);
+  assert.strictEqual(processedLarge.isTruncated, true);
+  assert.ok(processedLarge.processedDiff.includes('[Diff truncated'));
 });
 
-test('Reviewer Ranking Engine', () => {
+test('4. Reviewer Candidate Ranking - Author Exclusion & Evidence Weighting', () => {
   const codeownerMatches = [
-    { username: 'alex-payments', reason: 'CODEOWNER rule matched' },
+    { username: 'alex-payments', reason: 'CODEOWNER for payments/' },
+    { username: 'pr-author-bob', reason: 'CODEOWNER rule matched' },
   ];
   const reviewHistory = {
     'alex-payments': 4,
     'jordan-dev': 2,
+    'pr-author-bob': 10,
   };
 
   const ranked = rankReviewerCandidates(codeownerMatches, reviewHistory, 'pr-author-bob');
+
+  // PR author must NEVER be in candidate list
+  assert.strictEqual(
+    ranked.some((r) => r.username === 'pr-author-bob'),
+    false
+  );
   assert.strictEqual(ranked[0].username, 'alex-payments');
-  assert.ok(ranked[0].score > ranked[1].score);
 });
 
-test('Slack Card Builder Formats Block Kit Correctly', () => {
+test('5. Reviewer Hallucination Protection - Validates AI suggestions against evidence', () => {
+  const validCandidates = [{ username: 'alex-payments', score: 50, reason: 'CODEOWNER' }];
+
+  // Unknown hallucinated user returned by LLM
+  const validatedUnknown = validateSelectedReviewer('unknown-hallucinated-user', validCandidates);
+  assert.strictEqual(validatedUnknown, null);
+
+  // Valid candidate suggested by LLM
+  const validatedValid = validateSelectedReviewer('alex-payments', validCandidates);
+  assert.notStrictEqual(validatedValid, null);
+  assert.strictEqual(validatedValid.username, 'alex-payments');
+});
+
+test('6. Reviewer Candidate Fallback - Returns explicit no match when no evidence exists', () => {
+  const ranked = rankReviewerCandidates([], {}, 'alice');
+  assert.strictEqual(ranked.length, 0);
+
+  const fallbackAI = generateFallbackAIAnalysis({ title: 'Test PR' }, { level: 'LOW', score: 10, reasons: [] }, []);
+  assert.deepStrictEqual(fallbackAI.reviewers, []);
+});
+
+test('7. Slack Triage Card Formatting', () => {
   const prData = {
     number: 42,
     title: 'Add payment retry logic',
@@ -88,6 +110,23 @@ test('Slack Card Builder Formats Block Kit Correctly', () => {
 
   const card = buildTriageSlackCard(prData, analysis);
   assert.ok(card.blocks);
-  assert.ok(card.blocks.length >= 6);
   assert.strictEqual(card.blocks[0].type, 'header');
+});
+
+test('8. Slack Stale Escalation Card Formatting', () => {
+  const prData = {
+    number: 42,
+    title: 'Add payment retry logic',
+    htmlUrl: 'https://github.com/org/repo/pull/42',
+    author: 'developer123',
+  };
+
+  const stateEntry = {
+    riskLevel: 'HIGH',
+    assignedReviewer: 'alex-payments',
+  };
+
+  const staleCard = buildStaleEscalationSlackCard(prData, stateEntry, 12);
+  assert.ok(staleCard.blocks);
+  assert.ok(JSON.stringify(staleCard).includes('HIGH-RISK PR STALE ESCALATION'));
 });

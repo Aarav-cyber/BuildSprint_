@@ -1,4 +1,5 @@
 import Groq from 'groq-sdk';
+import { processDiffAndMetadata } from '../github/diff.js';
 
 /**
  * Creates Groq SDK client if API key is present.
@@ -17,6 +18,9 @@ export function getGroqClient() {
 export async function analyzePRWithGroq(prData, deterministicRisk, reviewerCandidates = []) {
   const client = getGroqClient();
 
+  // Process diff via dedicated diff processing layer
+  const { summaryHeader, fileListStr, processedDiff } = processDiffAndMetadata(prData, 7000);
+
   if (!client) {
     console.warn('GROQ_API_KEY not set. Using fallback mock AI analysis.');
     return generateFallbackAIAnalysis(prData, deterministicRisk, reviewerCandidates);
@@ -27,18 +31,16 @@ You are an expert AI PR Triage Assistant.
 Analyze the following pull request details and return ONLY a valid JSON object.
 
 ### Pull Request Metadata
-Title: ${prData.title}
-Description: ${prData.body || '(No description)'}
+${summaryHeader}
 Author: ${prData.author}
 Branch: ${prData.headBranch} -> ${prData.baseBranch}
-Stats: +${prData.additions} -${prData.deletions} in ${prData.changedFilesCount} files
 Is Draft: ${prData.draft}
 
 ### Changed Files
-${prData.files.map((f) => `- ${f.filename} (+${f.additions} -${f.deletions})`).join('\n')}
+${fileListStr || '(No files specified)'}
 
-### Sample Diff / Patches
-${prData.rawDiff.substring(0, 6000) || '(No diff available)'}
+### Code Changes / Diff
+${processedDiff}
 
 ### Deterministic Risk Pre-Assessment
 Calculated Level: ${deterministicRisk.level} (Score: ${deterministicRisk.score}/100)
@@ -60,12 +62,7 @@ Return ONLY a JSON object with this exact structure:
     "score": number (0-100),
     "reasons": ["Reason 1", "Reason 2"]
   },
-  "reviewers": [
-    {
-      "username": "suggested_username",
-      "reason": "Clear justification based on CODEOWNERS, blame, or module knowledge"
-    }
-  ]
+  "suggested_reviewer_username": "username from candidates list or null if no strong candidate"
 }
 `;
 
@@ -90,8 +87,33 @@ Return ONLY a JSON object with this exact structure:
       const content = response.choices[0]?.message?.content?.trim();
       if (content) {
         const parsed = JSON.parse(content);
-        if (parsed.summary && parsed.risk && Array.isArray(parsed.reviewers)) {
-          return parsed;
+        if (parsed.summary && parsed.risk) {
+          // Validate risk structure
+          const validLevel = ['LOW', 'MEDIUM', 'HIGH'].includes(parsed.risk.level)
+            ? parsed.risk.level
+            : deterministicRisk.level;
+          const validScore = typeof parsed.risk.score === 'number' ? parsed.risk.score : deterministicRisk.score;
+          const validReasons = Array.isArray(parsed.risk.reasons) ? parsed.risk.reasons : deterministicRisk.reasons;
+
+          // Process reviewer selection against candidates
+          let finalReviewers = reviewerCandidates;
+          if (parsed.suggested_reviewer_username && reviewerCandidates.length > 0) {
+            const matchedCandidate = reviewerCandidates.find(
+              (c) => c.username.toLowerCase() === parsed.suggested_reviewer_username.toLowerCase()
+            );
+            if (matchedCandidate) {
+              finalReviewers = [
+                matchedCandidate,
+                ...reviewerCandidates.filter((c) => c.username !== matchedCandidate.username),
+              ];
+            }
+          }
+
+          return {
+            summary: parsed.summary,
+            risk: { level: validLevel, score: validScore, reasons: validReasons },
+            reviewers: finalReviewers,
+          };
         }
       }
     } catch (err) {
@@ -105,20 +127,11 @@ Return ONLY a JSON object with this exact structure:
 /**
  * Generates structured analysis if Groq is unavailable or fails.
  */
-export function generateFallbackAIAnalysis(prData, deterministicRisk, reviewerCandidates) {
-  let summary = `Modifies ${prData.changedFilesCount} file(s) (+${prData.additions} -${prData.deletions}).`;
+export function generateFallbackAIAnalysis(prData, deterministicRisk, reviewerCandidates = []) {
+  let summary = `Modifies ${prData.changedFilesCount || prData.files?.length || 0} file(s) (+${prData.additions || 0} -${prData.deletions || 0}).`;
   if (prData.title) {
     summary = `PR "${prData.title}": ${prData.body ? prData.body.slice(0, 120) + '...' : 'Updates repository code.'}`;
   }
-
-  const reviewers = reviewerCandidates.length > 0
-    ? reviewerCandidates.slice(0, 2)
-    : [
-        {
-          username: 'team-lead',
-          reason: 'Default fallback assignment (no explicit ownership found)',
-        },
-      ];
 
   return {
     summary,
@@ -127,6 +140,6 @@ export function generateFallbackAIAnalysis(prData, deterministicRisk, reviewerCa
       score: deterministicRisk.score,
       reasons: deterministicRisk.reasons.length > 0 ? deterministicRisk.reasons : ['Standard code change'],
     },
-    reviewers,
+    reviewers: reviewerCandidates,
   };
 }

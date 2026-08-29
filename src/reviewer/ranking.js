@@ -8,15 +8,19 @@ export function rankReviewerCandidates(codeownerMatches = [], reviewHistory = {}
   const scores = new Map();
   const rationale = new Map();
 
+  const normalizedAuthor = (prAuthor || '').toLowerCase().trim();
+
   // Helper to add score
   const addScore = (username, points, reason) => {
-    if (!username || username.toLowerCase() === prAuthor.toLowerCase()) return;
+    if (!username) return;
+    const cleanUser = username.replace(/^@/, '').trim();
+    if (!cleanUser || cleanUser.toLowerCase() === normalizedAuthor) return;
 
-    scores.set(username, (scores.get(username) || 0) + points);
-    if (!rationale.has(username)) {
-      rationale.set(username, []);
+    scores.set(cleanUser, (scores.get(cleanUser) || 0) + points);
+    if (!rationale.has(cleanUser)) {
+      rationale.set(cleanUser, []);
     }
-    rationale.get(username).push(reason);
+    rationale.get(cleanUser).push(reason);
   };
 
   // Factor 1: CODEOWNERS (highest weight)
@@ -41,4 +45,17 @@ export function rankReviewerCandidates(codeownerMatches = [], reviewHistory = {}
   candidates.sort((a, b) => b.score - a.score);
 
   return candidates;
+}
+
+/**
+ * Validates candidate against evidence to ensure no reviewer hallucination.
+ */
+export function validateSelectedReviewer(selectedUsername, validCandidates = []) {
+  if (!selectedUsername || validCandidates.length === 0) return null;
+
+  const matched = validCandidates.find(
+    (c) => c.username.toLowerCase() === selectedUsername.replace(/^@/, '').toLowerCase().trim()
+  );
+
+  return matched || null;
 }

@@ -40,7 +40,7 @@ export async function triagePullRequest(owner, repo, pullNumber) {
   // 2. Deterministic Risk Assessment
   const deterministicRisk = calculateDeterministicRisk(prData);
 
-  // 3. Reviewer candidate gathering
+  // 3. Reviewer candidate gathering from repository evidence
   const filePaths = prData.files.map((f) => f.filename);
   const codeownersText = await fetchCodeowners(owner, repo);
   const parsedCodeowners = parseCodeowners(codeownersText);
@@ -50,7 +50,7 @@ export async function triagePullRequest(owner, repo, pullNumber) {
 
   const rankedCandidates = rankReviewerCandidates(codeownerMatches, reviewHistory, prData.author);
 
-  // 4. AI Analysis via Groq
+  // 4. AI Analysis via Groq (with strict candidate validation)
   const aiAnalysis = await analyzePRWithGroq(prData, deterministicRisk, rankedCandidates);
 
   // 5. Blend risk assessments
@@ -59,7 +59,7 @@ export async function triagePullRequest(owner, repo, pullNumber) {
   const finalAnalysis = {
     summary: aiAnalysis.summary,
     risk: finalRisk,
-    reviewers: aiAnalysis.reviewers && aiAnalysis.reviewers.length > 0 ? aiAnalysis.reviewers : rankedCandidates,
+    reviewers: aiAnalysis.reviewers,
   };
 
   // 6. Send Slack notification
@@ -68,7 +68,7 @@ export async function triagePullRequest(owner, repo, pullNumber) {
 
   // 7. Update State Store
   const key = `${owner}/${repo}#${pullNumber}`;
-  const topReviewer = finalAnalysis.reviewers[0]?.username || null;
+  const topReviewer = finalAnalysis.reviewers && finalAnalysis.reviewers.length > 0 ? finalAnalysis.reviewers[0].username : null;
 
   updatePREntry(key, {
     owner,
@@ -84,6 +84,7 @@ export async function triagePullRequest(owner, repo, pullNumber) {
     assignedReviewer: topReviewer,
     triagedAt: new Date().toISOString(),
     lastActivityAt: prData.updatedAt || new Date().toISOString(),
+    hasBeenReviewed: false,
     staleNudgeSent: false,
   });
 
