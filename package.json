@@ -1,0 +1,30 @@
+{
+  "name": "pr-review-triage-agent",
+  "version": "1.0.0",
+  "description": "AI-powered PR review triage agent with risk assessment, reviewer routing, and stale escalation",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "stale-check": "node src/stale/checker.js --run-once",
+    "test": "node --test tests/*.test.js",
+    "simulate": "node scripts/simulate.js"
+  },
+  "keywords": [
+    "github",
+    "pull-request",
+    "triage",
+    "groq",
+    "slack",
+    "ai"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@octokit/rest": "^21.1.1",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "groq-sdk": "^0.15.0"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "demo-org/demo-repo#102": {
+    "owner": "demo-org",
+    "repo": "demo-repo",
+    "number": 102,
+    "title": "Add exponential retry handling to payment webhook processing",
+    "author": "dev-bob",
+    "htmlUrl": "https://github.com/demo-org/demo-repo/pull/102",
+    "status": "open",
+    "riskLevel": "HIGH",
+    "riskScore": 95,
+    "assignedReviewer": "alex-payments",
+    "triagedAt": "2026-08-29T07:39:25.487Z",
+    "lastActivityAt": "2026-08-29T07:39:25.487Z",
+    "staleNudgeSent": false,
+    "updatedAt": "2026-08-29T17:39:25.489Z"
+  }
+}
