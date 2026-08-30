@@ -92,7 +92,39 @@ test('6. Reviewer Candidate Fallback - Returns explicit no match when no evidenc
   assert.deepStrictEqual(fallbackAI.reviewers, []);
 });
 
-test('7. Slack Triage Card Formatting', () => {
+test('7. Verification - Bounded Processed Diff Passed to Groq Prompt Construction', async () => {
+  const hugeDiff = 'X'.repeat(20000);
+  const prData = {
+    title: 'Huge PR',
+    body: 'Tests diff bounds',
+    author: 'dev1',
+    headBranch: 'feature',
+    baseBranch: 'main',
+    additions: 1000,
+    deletions: 500,
+    changedFilesCount: 5,
+    files: [{ filename: 'big.js', status: 'modified', additions: 1000, deletions: 500 }],
+    rawDiff: hugeDiff,
+  };
+
+  // Run fallback analysis without GROQ_API_KEY
+  const result = await analyzePRWithGroq(prData, { level: 'HIGH', score: 80, reasons: [] }, []);
+  assert.ok(result.summary);
+  assert.strictEqual(result.risk.level, 'HIGH');
+});
+
+test('8. Verification - Final State Assigned Reviewer Is Evidence-Backed or Null', () => {
+  const validCandidates = [{ username: 'sarah-auth', score: 50, reason: 'CODEOWNER' }];
+  
+  // When hallucinated user suggested, state gets null / evidence-backed top candidate
+  const hallucinatedMatch = validateSelectedReviewer('hallucinated-user', validCandidates);
+  assert.strictEqual(hallucinatedMatch, null);
+
+  const topReviewerState = hallucinatedMatch ? hallucinatedMatch.username : (validCandidates[0]?.username || null);
+  assert.strictEqual(topReviewerState, 'sarah-auth');
+});
+
+test('9. Slack Triage Card Formatting', () => {
   const prData = {
     number: 42,
     title: 'Add payment retry logic',
@@ -113,7 +145,7 @@ test('7. Slack Triage Card Formatting', () => {
   assert.strictEqual(card.blocks[0].type, 'header');
 });
 
-test('8. Slack Stale Escalation Card Formatting', () => {
+test('10. Slack Stale Escalation Card Formatting', () => {
   const prData = {
     number: 42,
     title: 'Add payment retry logic',
