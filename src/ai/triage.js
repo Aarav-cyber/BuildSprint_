@@ -1,34 +1,120 @@
-import Groq from 'groq-sdk';
 import { processDiffAndMetadata } from '../github/diff.js';
 
 /**
- * Creates Groq SDK client if API key is present.
+ * Returns whether Gemini is configured.
  */
-export function getGroqClient() {
-  const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey) {
-    return null;
-  }
-  return new Groq({ apiKey });
+export function hasGeminiClient() {
+  return Boolean(process.env.GEMINI_API_KEY);
 }
 
 /**
- * Main AI Analysis function using Groq Llama 3.3 70B (with Llama 3.1 8B fallback).
+ * Calls Gemini using the REST API.
+ *
+ * We use the REST API directly instead of adding another SDK dependency.
  */
-export async function analyzePRWithGroq(prData, deterministicRisk, reviewerCandidates = []) {
-  const client = getGroqClient();
+async function callGemini(prompt, model = 'gemini-2.5-flash') {
+  const apiKey = process.env.GEMINI_API_KEY;
 
+  if (!apiKey) {
+    return null;
+  }
+
+  const url =
+    `https://generativelanguage.googleapis.com/v1beta/models/` +
+    `${model}:generateContent?key=${apiKey}`;
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            {
+              text: prompt,
+            },
+          ],
+        },
+      ],
+      generationConfig: {
+        temperature: 0.2,
+        responseMimeType: 'application/json',
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Gemini API ${response.status}: ${errorText}`);
+  }
+
+  const data = await response.json();
+
+  const content =
+    data.candidates?.[0]?.content?.parts
+      ?.map((part) => part.text || '')
+      .join('')
+      .trim();
+
+  if (!content) {
+    throw new Error('Gemini returned an empty response');
+  }
+
+  return content;
+}
+
+/**
+ * Main AI Analysis function using Gemini.
+ *
+ * Kept under the old function name so existing webhook/test imports
+ * continue working without requiring changes elsewhere.
+ */
+export async function analyzePRWithGroq(
+  prData,
+  deterministicRisk,
+  reviewerCandidates = []
+) {
+  return analyzePRWithGemini(
+    prData,
+    deterministicRisk,
+    reviewerCandidates
+  );
+}
+
+/**
+ * Main AI Analysis function using Gemini.
+ */
+export async function analyzePRWithGemini(
+  prData,
+  deterministicRisk,
+  reviewerCandidates = []
+) {
   // Process diff via dedicated diff processing layer
-  const { summaryHeader, fileListStr, processedDiff } = processDiffAndMetadata(prData, 7000);
+  const {
+    summaryHeader,
+    fileListStr,
+    processedDiff,
+  } = processDiffAndMetadata(prData, 7000);
 
-  if (!client) {
-    console.warn('GROQ_API_KEY not set. Using fallback mock AI analysis.');
-    return generateFallbackAIAnalysis(prData, deterministicRisk, reviewerCandidates);
+  if (!hasGeminiClient()) {
+    console.warn(
+      'GEMINI_API_KEY not set. Using fallback mock AI analysis.'
+    );
+
+    return generateFallbackAIAnalysis(
+      prData,
+      deterministicRisk,
+      reviewerCandidates
+    );
   }
 
   const prompt = `
 You are an expert AI PR Triage Assistant.
-Analyze the following pull request details and return ONLY a valid JSON object.
+
+Analyze the following pull request and return ONLY a valid JSON object.
 
 ### Pull Request Metadata
 ${summaryHeader}
@@ -43,103 +129,208 @@ ${fileListStr || '(No files specified)'}
 ${processedDiff}
 
 ### Deterministic Risk Pre-Assessment
-Calculated Level: ${deterministicRisk.level} (Score: ${deterministicRisk.score}/100)
-Detected Signals: ${deterministicRisk.reasons.join('; ') || 'None'}
+Calculated Level: ${deterministicRisk.level}
+Calculated Score: ${deterministicRisk.score}/100
+Detected Signals: ${
+    deterministicRisk.reasons.join('; ') || 'None'
+}
 
-### Available Reviewer Candidates (from CODEOWNERS / History)
+### Available Reviewer Candidates
 ${
   reviewerCandidates.length > 0
-    ? reviewerCandidates.map((r) => `- ${r.username}: ${r.reason}`).join('\n')
+    ? reviewerCandidates
+        .map((r) => `- ${r.username}: ${r.reason}`)
+        .join('\n')
     : 'No candidates matched automatically.'
 }
 
 ### Instructions
-Return ONLY a JSON object with this exact structure:
+
+Analyze the PR carefully.
+
+Return ONLY a JSON object with exactly this structure:
+
 {
   "summary": "1-2 sentence plain English explanation of what this PR does",
   "risk": {
-    "level": "LOW" | "MEDIUM" | "HIGH",
-    "score": number (0-100),
+    "level": "LOW",
+    "score": 0,
     "reasons": ["Reason 1", "Reason 2"]
   },
-  "suggested_reviewer_username": "username from candidates list or null if no strong candidate"
+  "suggested_reviewer_username": null
 }
+
+Rules:
+
+1. risk.level MUST be exactly one of:
+   LOW
+   MEDIUM
+   HIGH
+
+2. risk.score MUST be a number from 0 to 100.
+
+3. risk.reasons MUST be an array of strings.
+
+4. suggested_reviewer_username MUST either:
+   - be one of the usernames listed in Available Reviewer Candidates, or
+   - be null.
+
+5. NEVER invent a reviewer username.
+
+6. If there are no strong reviewer candidates, use null.
+
+7. Do not include Markdown.
+
+8. Do not include code fences.
+
+9. Return valid JSON only.
 `;
 
-  const models = ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'];
+  // Primary Gemini model
+  const models = [
+    'gemini-2.5-flash',
+    'gemini-2.0-flash',
+  ];
 
   for (const model of models) {
     try {
-      const response = await client.chat.completions.create({
-        messages: [
-          {
-            role: 'system',
-            content:
-              'You are a strict JSON PR triage generator. Output valid JSON only without markdown code blocks or additional text.',
-          },
-          { role: 'user', content: prompt },
-        ],
-        model,
-        temperature: 0.2,
-        response_format: { type: 'json_object' },
-      });
+      console.log(`[Gemini] Calling model ${model}...`);
 
-      const content = response.choices[0]?.message?.content?.trim();
-      if (content) {
-        const parsed = JSON.parse(content);
-        if (parsed.summary && parsed.risk) {
-          // Validate risk structure
-          const validLevel = ['LOW', 'MEDIUM', 'HIGH'].includes(parsed.risk.level)
-            ? parsed.risk.level
-            : deterministicRisk.level;
-          const validScore = typeof parsed.risk.score === 'number' ? parsed.risk.score : deterministicRisk.score;
-          const validReasons = Array.isArray(parsed.risk.reasons) ? parsed.risk.reasons : deterministicRisk.reasons;
+      const content = await callGemini(prompt, model);
 
-          // Process reviewer selection against candidates
-          let finalReviewers = reviewerCandidates;
-          if (parsed.suggested_reviewer_username && reviewerCandidates.length > 0) {
-            const matchedCandidate = reviewerCandidates.find(
-              (c) => c.username.toLowerCase() === parsed.suggested_reviewer_username.toLowerCase()
-            );
-            if (matchedCandidate) {
-              finalReviewers = [
-                matchedCandidate,
-                ...reviewerCandidates.filter((c) => c.username !== matchedCandidate.username),
-              ];
-            }
-          }
+      const parsed = JSON.parse(content);
 
-          return {
-            summary: parsed.summary,
-            risk: { level: validLevel, score: validScore, reasons: validReasons },
-            reviewers: finalReviewers,
-          };
+      if (!parsed.summary || !parsed.risk) {
+        throw new Error('Gemini response missing summary or risk');
+      }
+
+      // -----------------------------
+      // Validate risk
+      // -----------------------------
+
+      const validLevel = ['LOW', 'MEDIUM', 'HIGH'].includes(
+        parsed.risk.level
+      )
+        ? parsed.risk.level
+        : deterministicRisk.level;
+
+      const numericScore = Number(parsed.risk.score);
+
+      const validScore =
+        Number.isFinite(numericScore) &&
+        numericScore >= 0 &&
+        numericScore <= 100
+          ? numericScore
+          : deterministicRisk.score;
+
+      const validReasons = Array.isArray(parsed.risk.reasons)
+        ? parsed.risk.reasons
+        : deterministicRisk.reasons;
+
+      // -----------------------------
+      // Validate reviewer
+      // -----------------------------
+
+      let finalReviewers = reviewerCandidates;
+
+      if (
+        parsed.suggested_reviewer_username &&
+        reviewerCandidates.length > 0
+      ) {
+        const suggestedUsername =
+          String(parsed.suggested_reviewer_username).toLowerCase();
+
+        const matchedCandidate = reviewerCandidates.find(
+          (candidate) =>
+            candidate.username.toLowerCase() === suggestedUsername
+        );
+
+        // IMPORTANT:
+        // Only accept reviewers that already exist in the
+        // evidence-backed candidate list.
+        if (matchedCandidate) {
+          finalReviewers = [
+            matchedCandidate,
+            ...reviewerCandidates.filter(
+              (candidate) =>
+                candidate.username !== matchedCandidate.username
+            ),
+          ];
+        } else {
+          console.warn(
+            `[Gemini] Ignoring unsupported reviewer suggestion: ${parsed.suggested_reviewer_username}`
+          );
         }
       }
+
+      console.log(
+        `[Gemini] Analysis successful using ${model}`
+      );
+
+      return {
+        summary: parsed.summary,
+        risk: {
+          level: validLevel,
+          score: validScore,
+          reasons: validReasons,
+        },
+        reviewers: finalReviewers,
+      };
     } catch (err) {
-      console.warn(`Groq API call failed with model ${model}:`, err.message);
+      console.warn(
+        `[Gemini] API call failed with model ${model}:`,
+        err.message
+      );
     }
   }
 
-  return generateFallbackAIAnalysis(prData, deterministicRisk, reviewerCandidates);
+  console.warn(
+    '[Gemini] All configured models failed. Using deterministic fallback.'
+  );
+
+  return generateFallbackAIAnalysis(
+    prData,
+    deterministicRisk,
+    reviewerCandidates
+  );
 }
 
 /**
- * Generates structured analysis if Groq is unavailable or fails.
+ * Generates structured analysis if Gemini is unavailable or fails.
  */
-export function generateFallbackAIAnalysis(prData, deterministicRisk, reviewerCandidates = []) {
-  let summary = `Modifies ${prData.changedFilesCount || prData.files?.length || 0} file(s) (+${prData.additions || 0} -${prData.deletions || 0}).`;
+export function generateFallbackAIAnalysis(
+  prData,
+  deterministicRisk,
+  reviewerCandidates = []
+) {
+  let summary = `Modifies ${
+    prData.changedFilesCount ||
+    prData.files?.length ||
+    0
+  } file(s) (+${prData.additions || 0} -${
+    prData.deletions || 0
+  }).`;
+
   if (prData.title) {
-    summary = `PR "${prData.title}": ${prData.body ? prData.body.slice(0, 120) + '...' : 'Updates repository code.'}`;
+    summary = `PR "${prData.title}": ${
+      prData.body
+        ? prData.body.slice(0, 120) + '...'
+        : 'Updates repository code.'
+    }`;
   }
 
   return {
     summary,
+
     risk: {
       level: deterministicRisk.level,
       score: deterministicRisk.score,
-      reasons: deterministicRisk.reasons.length > 0 ? deterministicRisk.reasons : ['Standard code change'],
+      reasons:
+        deterministicRisk.reasons.length > 0
+          ? deterministicRisk.reasons
+          : ['Standard code change'],
     },
+
     reviewers: reviewerCandidates,
   };
 }
