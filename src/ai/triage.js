@@ -1,4 +1,4 @@
-import { processDiffAndMetadata } from '../github/diff.js';
+import { processDiffAndMetadata } from "../github/diff.js";
 
 /**
  * Returns whether Gemini is configured.
@@ -12,7 +12,7 @@ export function hasGeminiClient() {
  *
  * We use the REST API directly instead of adding another SDK dependency.
  */
-async function callGemini(prompt, model = 'gemini-2.5-flash') {
+async function callGemini(prompt, model = "gemini-2.5-flash") {
   const apiKey = process.env.GEMINI_API_KEY;
 
   if (!apiKey) {
@@ -24,14 +24,14 @@ async function callGemini(prompt, model = 'gemini-2.5-flash') {
     `${model}:generateContent?key=${apiKey}`;
 
   const response = await fetch(url, {
-    method: 'POST',
+    method: "POST",
     headers: {
-      'Content-Type': 'application/json',
+      "Content-Type": "application/json",
     },
     body: JSON.stringify({
       contents: [
         {
-          role: 'user',
+          role: "user",
           parts: [
             {
               text: prompt,
@@ -41,7 +41,7 @@ async function callGemini(prompt, model = 'gemini-2.5-flash') {
       ],
       generationConfig: {
         temperature: 0.2,
-        responseMimeType: 'application/json',
+        responseMimeType: "application/json",
       },
     }),
   });
@@ -53,14 +53,13 @@ async function callGemini(prompt, model = 'gemini-2.5-flash') {
 
   const data = await response.json();
 
-  const content =
-    data.candidates?.[0]?.content?.parts
-      ?.map((part) => part.text || '')
-      .join('')
-      .trim();
+  const content = data.candidates?.[0]?.content?.parts
+    ?.map((part) => part.text || "")
+    .join("")
+    .trim();
 
   if (!content) {
-    throw new Error('Gemini returned an empty response');
+    throw new Error("Gemini returned an empty response");
   }
 
   return content;
@@ -75,13 +74,9 @@ async function callGemini(prompt, model = 'gemini-2.5-flash') {
 export async function analyzePRWithGroq(
   prData,
   deterministicRisk,
-  reviewerCandidates = []
+  reviewerCandidates = [],
 ) {
-  return analyzePRWithGemini(
-    prData,
-    deterministicRisk,
-    reviewerCandidates
-  );
+  return analyzePRWithGemini(prData, deterministicRisk, reviewerCandidates);
 }
 
 /**
@@ -90,24 +85,21 @@ export async function analyzePRWithGroq(
 export async function analyzePRWithGemini(
   prData,
   deterministicRisk,
-  reviewerCandidates = []
+  reviewerCandidates = [],
 ) {
   // Process diff via dedicated diff processing layer
-  const {
-    summaryHeader,
-    fileListStr,
-    processedDiff,
-  } = processDiffAndMetadata(prData, 7000);
+  const { summaryHeader, fileListStr, processedDiff } = processDiffAndMetadata(
+    prData,
+    7000,
+  );
 
   if (!hasGeminiClient()) {
-    console.warn(
-      'GEMINI_API_KEY not set. Using fallback mock AI analysis.'
-    );
+    console.warn("GEMINI_API_KEY not set. Using fallback mock AI analysis.");
 
     return generateFallbackAIAnalysis(
       prData,
       deterministicRisk,
-      reviewerCandidates
+      reviewerCandidates,
     );
   }
 
@@ -123,7 +115,7 @@ Branch: ${prData.headBranch} -> ${prData.baseBranch}
 Is Draft: ${prData.draft}
 
 ### Changed Files
-${fileListStr || '(No files specified)'}
+${fileListStr || "(No files specified)"}
 
 ### Code Changes / Diff
 ${processedDiff}
@@ -131,17 +123,13 @@ ${processedDiff}
 ### Deterministic Risk Pre-Assessment
 Calculated Level: ${deterministicRisk.level}
 Calculated Score: ${deterministicRisk.score}/100
-Detected Signals: ${
-    deterministicRisk.reasons.join('; ') || 'None'
-}
+Detected Signals: ${deterministicRisk.reasons.join("; ") || "None"}
 
 ### Available Reviewer Candidates
 ${
   reviewerCandidates.length > 0
-    ? reviewerCandidates
-        .map((r) => `- ${r.username}: ${r.reason}`)
-        .join('\n')
-    : 'No candidates matched automatically.'
+    ? reviewerCandidates.map((r) => `- ${r.username}: ${r.reason}`).join("\n")
+    : "No candidates matched automatically."
 }
 
 ### Instructions
@@ -187,10 +175,7 @@ Rules:
 `;
 
   // Primary Gemini model
-  const models = [
-    'gemini-2.5-flash',
-    'gemini-2.0-flash',
-  ];
+  const models = ["gemini-2.5-flash", "gemini-2.0-flash"];
 
   for (const model of models) {
     try {
@@ -201,16 +186,14 @@ Rules:
       const parsed = JSON.parse(content);
 
       if (!parsed.summary || !parsed.risk) {
-        throw new Error('Gemini response missing summary or risk');
+        throw new Error("Gemini response missing summary or risk");
       }
 
       // -----------------------------
       // Validate risk
       // -----------------------------
 
-      const validLevel = ['LOW', 'MEDIUM', 'HIGH'].includes(
-        parsed.risk.level
-      )
+      const validLevel = ["LOW", "MEDIUM", "HIGH"].includes(parsed.risk.level)
         ? parsed.risk.level
         : deterministicRisk.level;
 
@@ -233,16 +216,13 @@ Rules:
 
       let finalReviewers = reviewerCandidates;
 
-      if (
-        parsed.suggested_reviewer_username &&
-        reviewerCandidates.length > 0
-      ) {
-        const suggestedUsername =
-          String(parsed.suggested_reviewer_username).toLowerCase();
+      if (parsed.suggested_reviewer_username && reviewerCandidates.length > 0) {
+        const suggestedUsername = String(
+          parsed.suggested_reviewer_username,
+        ).toLowerCase();
 
         const matchedCandidate = reviewerCandidates.find(
-          (candidate) =>
-            candidate.username.toLowerCase() === suggestedUsername
+          (candidate) => candidate.username.toLowerCase() === suggestedUsername,
         );
 
         // IMPORTANT:
@@ -252,20 +232,17 @@ Rules:
           finalReviewers = [
             matchedCandidate,
             ...reviewerCandidates.filter(
-              (candidate) =>
-                candidate.username !== matchedCandidate.username
+              (candidate) => candidate.username !== matchedCandidate.username,
             ),
           ];
         } else {
           console.warn(
-            `[Gemini] Ignoring unsupported reviewer suggestion: ${parsed.suggested_reviewer_username}`
+            `[Gemini] Ignoring unsupported reviewer suggestion: ${parsed.suggested_reviewer_username}`,
           );
         }
       }
 
-      console.log(
-        `[Gemini] Analysis successful using ${model}`
-      );
+      console.log(`[Gemini] Analysis successful using ${model}`);
 
       return {
         summary: parsed.summary,
@@ -279,19 +256,19 @@ Rules:
     } catch (err) {
       console.warn(
         `[Gemini] API call failed with model ${model}:`,
-        err.message
+        err.message,
       );
     }
   }
 
   console.warn(
-    '[Gemini] All configured models failed. Using deterministic fallback.'
+    "[Gemini] All configured models failed. Using deterministic fallback.",
   );
 
   return generateFallbackAIAnalysis(
     prData,
     deterministicRisk,
-    reviewerCandidates
+    reviewerCandidates,
   );
 }
 
@@ -301,21 +278,17 @@ Rules:
 export function generateFallbackAIAnalysis(
   prData,
   deterministicRisk,
-  reviewerCandidates = []
+  reviewerCandidates = [],
 ) {
   let summary = `Modifies ${
-    prData.changedFilesCount ||
-    prData.files?.length ||
-    0
-  } file(s) (+${prData.additions || 0} -${
-    prData.deletions || 0
-  }).`;
+    prData.changedFilesCount || prData.files?.length || 0
+  } file(s) (+${prData.additions || 0} -${prData.deletions || 0}).`;
 
   if (prData.title) {
     summary = `PR "${prData.title}": ${
       prData.body
-        ? prData.body.slice(0, 120) + '...'
-        : 'Updates repository code.'
+        ? prData.body.slice(0, 120) + "..."
+        : "Updates repository code."
     }`;
   }
 
@@ -328,7 +301,7 @@ export function generateFallbackAIAnalysis(
       reasons:
         deterministicRisk.reasons.length > 0
           ? deterministicRisk.reasons
-          : ['Standard code change'],
+          : ["Standard code change"],
     },
 
     reviewers: reviewerCandidates,
